@@ -53,12 +53,12 @@ class roughBergomi:
         self.d_assets = 1
         self.simulate_paths(N_samples=N_samples, n_timesteps=n_timesteps)
 
-    def call_price(self):
-        S, _, _, _ = self.simulate_paths(N_samples=75000, n_timesteps=100)
+    def call_price(self, N_samples=10**5, n_timesteps=100):
+        S, _, _, _ = self.simulate_paths(N_samples=N_samples, n_timesteps=n_timesteps)
         return np.maximum(S[:, -1, 0] - self.K, 0).mean()
 
-    def put_price(self):
-        S, _, _, _ = self.simulate_paths(N_samples=75000, n_timesteps=100)
+    def put_price(self, N_samples=10**5, n_timesteps=100):
+        S, _, _, _ = self.simulate_paths(N_samples=N_samples, n_timesteps=n_timesteps)
         return np.maximum(self.K - S[:, -1, 0], 0).mean()
 
     @timing
