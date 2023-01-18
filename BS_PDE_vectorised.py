@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 
-plt.style.use('dark_background')
+# plt.style.use('dark_background')
+plt.style.use('ggplot')
 from mpl_toolkits.mplot3d import Axes3D
 
 # %matplotlib notebook
@@ -12,49 +13,49 @@ from scipy.linalg import solve as LS_solve
 from scipy import sparse
 from sklearn.linear_model import Ridge, LinearRegression
 from sklearn.metrics import accuracy_score, f1_score
+from dataclasses import dataclass
+from typing import Literal
 
-from utils import temp_seed, timing
-
-
-def ReLu(X):
-    return np.maximum(0, X)
-
-
-def grad_ReLu(X):
-    """returns a vector of derivatives"""
-    return np.maximum(np.sign(X.reshape(X.shape[0], -1)), 0)
+from utils import temp_seed, timing, payoff_function
+from reservoir import Reservoir, ReLu, grad_ReLu
 
 
-def grad_tanh(X):
-    """returns a vector of derivatives"""
-    X = X.reshape(X.shape[0], -1)
-    return np.ones_like(X) - (X ** 2)
+@dataclass
+class Parameters:
+    d: int
+    T: float
+    r: float
+    S0: np.ndarray
+    K: np.ndarray
+    sigma: np.ndarray
+    Cov: np.ndarray
+    opt_type: Literal['c', 'p']
+
+    n_hidden_nodes: int = 100
+    connectivity: float = 0.5
+    input_scaling: float = 0.1
+    weight_compact_radius: float = 0.5
 
 
-class Parameters():
-    def __init__(self):
-        self.S0 = np.array([1.]*50)  # np.random.uniform(0.5, 2, 5)
-        self.T = 1
-        self.r = 0.05
-        self.K = 1
-        self.sigma = np.linspace(0.05, 0.4, 50)
-        self.Cov = np.diag(self.sigma ** 2)
-        self.opt_type = 'c'
+class BlackScholes:
 
+    def __init__(self, parameters, N_samples, n_timesteps):
 
-class BlackScholes(Parameters):
+        for key, value in parameters.__dict__.items():
+            setattr(self, key, value)
 
-    def __init__(self):
-        super().__init__()
+        self.N_samples = N_samples
+        self.n_timesteps = n_timesteps
 
         # initialised when simulate_paths() is called
         self.time_grid = None
+        self.delta = None
         self.diffusion = None
+        self.S = None
         self.dW = None
-        self.price_path = None
-        self.N_samples = None
-        self.n_timesteps = None
         self.d_assets = None
+
+        self.simulate_paths(N_samples=N_samples, n_timesteps=n_timesteps)
 
     def _get_grid(self, S_array, T_array):
         self.surf_plot_grid = np.meshgrid(S_array, T_array)
@@ -78,105 +79,41 @@ class BlackScholes(Parameters):
         :param n_timesteps: number of increments
         """
         # initialise for further use
-        self.d_assets = self.S0.shape[0]
-        self.N_samples = N_samples
-        self.n_timesteps = n_timesteps
+        d_assets = self.S0.shape[0]
 
-        self.time_grid = np.linspace(0., self.T, n_timesteps)
-        self.diffusion = np.linalg.cholesky(self.Cov)
-        dt = self.time_grid[1:] - self.time_grid[:-1]
-        self.dW = np.tile(np.sqrt(dt[None, :, None]), (N_samples, 1, self.d_assets)) * np.random.randn(N_samples,
-                                                                                                       n_timesteps - 1,
-                                                                                                       self.d_assets)
+        time_grid = np.linspace(0., self.T, n_timesteps)
+        diffusion = np.linalg.cholesky(self.Cov)
+        dt = time_grid[1:] - time_grid[:-1]
+        dW = np.tile(np.sqrt(dt[None, :, None]), (N_samples, 1, d_assets)) * np.random.randn(N_samples,
+                                                                                             n_timesteps - 1,
+                                                                                             d_assets)
         drift = np.tile(((self.r - 0.5 * self.sigma[:, None] ** 2) * dt).T, (N_samples, 1, 1))
 
-        S = np.zeros((N_samples, n_timesteps, self.d_assets))
+        S = np.zeros((N_samples, n_timesteps, d_assets))
         S[:, 0] = self.S0
         for i in range(1, n_timesteps):
             S[:, i, :] = S[:, i - 1, :] * np.exp(
-                drift[:, i - 1, :] + np.matmul(self.diffusion, self.dW[:, i - 1, :].T).T)
+                drift[:, i - 1, :] + np.matmul(diffusion, dW[:, i - 1, :].T).T)
 
         # initialise for further use
-        self.price_path = S
+        if self.S is None:
+            self.d_assets = d_assets
+            self.time_grid = time_grid
+            self.delta = dt
+            self.diffusion = diffusion
+            self.S = S
+            self.dW = dW
         return S
 
 
-class Reservoir(object):
-    """
-    Build a reservoir and evaluate internal states
+class Trainer:
 
-    Parameters:
-        n_internal_units = processing units in the reservoir
-        connectivity = percentage of nonzero connection weights
-        input_scaling = scaling of the input connection weights
-    """
+    def __init__(self, model):
 
-    def __init__(self, n_internal_units=1000, connectivity=0.3, input_scaling=0.2,
-                 activation_function=ReLu, activation_derivative=grad_ReLu, seed=0):
-        # Initialize attributes
-        self._n_internal_units = n_internal_units
-        self._input_scaling = input_scaling
-        self._connectivity = connectivity
-        self._activation_function = activation_function
-        self._activation_derivative = activation_derivative
+        for key, value in model.__dict__.items():
+            setattr(self, key, value)
 
-        # Input weights depend on input size: they are set when data is provided
-        self._internal_weights = None
-        self._internal_bias = None
-
-        # Set seed
-        np.random.seed(seed)
-
-    def _initialize_internal_weights(self, n_internal_units, n_data_dimension, connectivity):
-        # Generate sparse, uniformly distributed weights.
-        internal_weights = sparse.rand(n_internal_units,
-                                       n_data_dimension,
-                                       density=connectivity).toarray()
-
-        # Ensure that the nonzero values are uniformly distributed in [-0.5, 0.5]
-        internal_weights[np.where(internal_weights > 0)] -= 0.5
-
-        return internal_weights
-
-    def _initialize_internal_bias(self, n_internal_units):
-        internal_bias = np.random.rand(n_internal_units, 1)
-        # Ensure that the values are uniformly distributed in [-0.5, 0.5]
-        internal_bias -= 0.5
-        return internal_bias
-
-    def _compute_state_matrix(self, X):
-        # Calculate state
-        state_before_activation = np.tensordot(self._internal_weights, X, axes=(1, 1)) \
-                                  + np.tile(self._internal_bias, (1, X.shape[0]))
-
-        # Apply nonlinearity
-        state_vec = self._activation_function(state_before_activation)
-
-        return state_vec
-
-    def get_reservoir_out(self, input_array):
-        N, d = input_array.shape
-        if self._internal_weights is None:
-            # Generate internal weights
-            self._internal_weights = self._initialize_internal_weights(self._n_internal_units, d,
-                                                                       self._connectivity)
-            self._internal_bias = self._initialize_internal_bias(self._n_internal_units)
-
-        # compute reservoir states
-        states = self._compute_state_matrix(input_array)
-
-        # compute reservoir grad
-        gradient = self._activation_derivative(states)[:, None, :] * np.tile(self._internal_weights[:, :, None],
-                                                                             (1, 1, N))
-
-        return states.T, gradient.transpose(2, 0, 1)
-
-
-class Trainer(Parameters):
-
-    def __init__(self, model_class):
-        super().__init__()
-        self.model = model_class
+        self._einsum_optimize = 'greedy'  # optimal # greedy # False
 
     def a(self, res_out):
         # In Black Scholes model f(u)=-r*u, therefore f_tilde(x)=-r*reservoir_out(x)
@@ -184,28 +121,29 @@ class Trainer(Parameters):
 
     def Sigma_func(self, S):
         # broadcast across columns (same as diag(S).dot(diffusion)
-        return self.model.diffusion * S[:, :, None]
+        return self.diffusion * S[:, :, None]
 
     def X(self, res, S, dt, dW):
         # res_out(x) - f_tilde(x) + res_grad(x)*Sigma(x)*dW
         res_out, res_grad = res.get_reservoir_out(S)
-        SigmaBM_prod = np.einsum('ijk,ik->ij', self.Sigma_func(S), dW)
-        return res_out - self.a(res_out) * dt + np.einsum('ijk,ik->ij', res_grad, SigmaBM_prod)
+        SigmaBM_prod = np.einsum('ijk,ik->ij', self.Sigma_func(S), dW, optimize=self._einsum_optimize)
+        return res_out - self.a(res_out) * dt + np.einsum('ijk,ik->ij', res_grad, SigmaBM_prod,
+                                                          optimize=self._einsum_optimize)
 
     def get_LS_problem(self, res, target, i):
-        single_regr = self.X(res, S=self.model.price_path[:, i, :],
-                             dt=self.model.time_grid[i + 1] - self.model.time_grid[i],
-                             dW=self.model.dW[:, i, :])
+        single_regr = self.X(res, S=self.S[:, i, :],
+                             dt=self.time_grid[i + 1] - self.time_grid[i],
+                             dW=self.dW[:, i, :])
 
         # perform the summation of the outer-products https://stackoverflow.com/q/35549082/5285408
-        A = np.einsum('ki,kj->ij', single_regr, single_regr)
+        A = np.einsum('ki,kj->ij', single_regr, single_regr, optimize=self._einsum_optimize)
 
-        B = np.einsum('ki,kj->ij', single_regr, target)
+        B = np.einsum('ki,kj->ij', single_regr, target, optimize=self._einsum_optimize)
         return A, B
 
     def get_solution(self, res, beta, i):
         # evaluates the solution of the regression
-        res_out, _ = res.get_reservoir_out(self.model.price_path[:, i, :])
+        res_out, _ = res.get_reservoir_out(self.S[:, i, :])
         target = np.tensordot(beta, res_out, axes=(1, 1)).T
         return target
 
@@ -226,25 +164,22 @@ class Trainer(Parameters):
             beta = reg.fit(A, B)
         return beta.T
 
-    def payoff_function(self, x):
-        if self.opt_type == 'c':
-            return np.maximum(x - self.K, 0)
-        elif self.opt_type == 'p':
-            return np.maximum(self.K - x, 0)
-        else:
-            raise ValueError('Wrong option type')
-
     @timing
-    def fit(self, alpha=1.):
-        Y_array = np.zeros((self.model.N_samples, self.model.n_timesteps, self.model.d_assets))
-        Y_array[:, -1, :] = self.payoff_function(self.model.price_path[:, -1, :])
+    def fit(self, alpha=1., verbose=0, seed=0):
+        Y_array = np.zeros((self.N_samples, self.n_timesteps, self.d_assets))
+        Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K, opt_type=self.opt_type)
 
-        for k in range(self.model.n_timesteps - 2, -1, -1):
-            print(f'Regressing time step: {k + 1}')
-            res = Reservoir(n_internal_units=100, connectivity=0.5, input_scaling=0.1, seed=k)
+        for k in range(self.n_timesteps - 2, -1, -1):
+            if verbose > 0: print(f'Regressing time step: {k + 1}')
+
+            res = Reservoir(n_internal_units=self.n_hidden_nodes,
+                            connectivity=self.connectivity,
+                            input_scaling=self.input_scaling,
+                            seed=seed+k)
             beta = self.fit_step_exact(res, Y_array[:, k + 1, :], k, alpha=alpha)
 
             Y_array[:, k, :] = self.get_solution(res, beta, k)
+
             # keep the price positive
             # Y_array[:, k, :] = np.maximum(self.get_solution(res, beta, k), 0)
             # Y_array[:, k, :] = np.abs(self.get_solution(res, beta, k))
@@ -253,21 +188,33 @@ class Trainer(Parameters):
 
 
 if __name__ == '__main__':
-    BS = BlackScholes()
-    path = BS.simulate_paths(n_timesteps=21, N_samples=50000)
+    d = 5; sigma = np.linspace(0.05, 0.4, d)
+    params = Parameters(d=d, S0=np.array([1.] * d),  # np.random.uniform(0.5, 2, 5)
+                        T=1.,
+                        r=0.05,
+                        K=np.array([1.] * d),
+                        sigma=sigma,
+                        Cov=np.diag(sigma ** 2),
+                        opt_type='c',
+                        n_hidden_nodes=1000,
+                        connectivity=0.5,
+                        input_scaling=0.1
+                        )
+
+    BS = BlackScholes(params, n_timesteps=21, N_samples=50000)
 
     trainer = Trainer(BS)
     option_price_process = trainer.fit()
-    # res = Reservoir(n_internal_units=500, connectivity=0.25, input_scaling=0.1)
-    # res.get_reservoir_out(path[:, -1, :])
 
-    plt.plot(BS.time_grid, option_price_process[:, :, 0].T)
+    plt.plot(BS.time_grid,
+             option_price_process[np.random.choice(option_price_process.shape[0], 200, replace=False), :, 0].T)
     plt.xlabel('t')
     plt.ylabel(r'$C_t$')
+    # plt.savefig('./Graphics/BS_option_price.pdf', format='pdf')
     plt.show()
 
     print(f'Theo. price: {BS.call_price(S=BS.S0, T=1)}')
-    print(f'MC price: {np.maximum(path[:, -1, :] - BS.K, 0).mean(0)}')
+    print(f'MC price: {np.maximum(BS.S[:, -1, :] - BS.K, 0).mean(0)}')
     print(f'PDE price: {option_price_process[:, 0, :].mean(0)}')
     print(f'MSE: {((BS.call_price(S=BS.S0, T=1) - option_price_process[:, 0, :].mean(0)) ** 2).mean()}')
 

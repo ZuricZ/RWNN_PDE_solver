@@ -25,3 +25,10 @@ def temp_seed(seed):
     finally:
         np.random.set_state(state)
 
+
+def payoff_function(x, K, opt_type='c'):
+    if opt_type not in 'CcPp':
+        raise ValueError('Wrong option type.')
+    opt_type_ind = 1 if opt_type == 'c' else -1
+    return np.maximum(opt_type_ind*(x - K), 0)
+

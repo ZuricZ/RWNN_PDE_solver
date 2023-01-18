@@ -1,55 +1,48 @@
 import numpy as np
 from scipy.linalg import solve as LS_solve
-from scipy import sparse
 from sklearn.linear_model import Ridge, LinearRegression
+from dataclasses import dataclass
+from typing import Literal
 
 from rbergomi import rBergomi
-from utils import temp_seed, timing
+from utils import temp_seed, timing, payoff_function
+
+from reservoir import Reservoir, ReLu, grad_ReLu
 
 import matplotlib.pyplot as plt
 
-plt.style.use('dark_background')
+# plt.style.use('dark_background')
+plt.style.use('ggplot')
 
 
-def ReLu(X):
-    return np.maximum(0, X)
-
-
-def grad_ReLu(X):
-    """returns a vector of derivatives"""
-    return np.maximum(np.sign(X.reshape(X.shape[0], -1)), 0)
-
-
-def grad_tanh(X):
-    """returns a vector of derivatives"""
-    X = X.reshape(X.shape[0], -1)
-    return np.ones_like(X) - (X ** 2)
-
-
+@dataclass
 class Parameters:
-    def __init__(self):
-        super(Parameters, self).__init__()
-        self.S0 = 1
-        self.T = 1
-        self.H = 0.3
-        self.r = 0.05
-        self.rho = -0.7
-        self.xi = 0.235 ** 2
-        self.eta = 1.9
-        self.K = 1
-        # self.sigma = np.linspace(0.05, 0.4, 5)
-        # self.Cov = np.diag(self.sigma ** 2)
-        self.opt_type = 'c'
+    S0: int
+    T: int
+    H: float
+    r: float
+    rho: float
+    xi: float
+    eta: float
+    K: int
+    opt_type: Literal['c', 'p']
+
+    n_hidden_nodes: int = 100
+    connectivity: float = 0.5
+    input_scaling: float = 0.25
+    weight_compact_radius: float = 0.5
 
 
-class roughBergomi(Parameters):
+class roughBergomi:
 
-    def __init__(self, N_samples, n_timesteps):
-        super().__init__()
+    def __init__(self, parameters, N_samples, n_timesteps):
+
+        for key, value in parameters.__dict__.items():
+            setattr(self, key, value)
 
         self.N_samples = N_samples
         self.n_timesteps = n_timesteps
-        self.delta = self.T/n_timesteps
+        self.delta = self.T / n_timesteps
         # initialised when simulate_paths() is called
         self.time_grid = None
         self.S = None
@@ -74,7 +67,7 @@ class roughBergomi(Parameters):
         :param N_samples:   number of samples
         :param n_timesteps: number of increments
         """
-        rB = rBergomi(n=n_timesteps, N=N_samples, T=self.T, r=self.r, a=self.H-.5)
+        rB = rBergomi(n=n_timesteps, N=N_samples, T=self.T, r=self.r, a=self.H - .5)
 
         dW1 = rB.dW1()
         dW2 = rB.dW2()
@@ -104,86 +97,18 @@ class roughBergomi(Parameters):
         return S, V, dW1, dW2
 
 
-class Reservoir(object):
-    """
-    Build a reservoir and evaluate internal states
+class Trainer:
 
-    Parameters:
-        n_internal_units = processing units in the reservoir
-        connectivity = percentage of nonzero connection weights
-        input_scaling = scaling of the input connection weights
-    """
+    def __init__(self, model):
 
-    def __init__(self, n_internal_units=1000, connectivity=0.25, input_scaling=0.2,
-                 activation_function=ReLu, activation_derivative=grad_ReLu, seed=0):
-        # Initialize attributes
-        self._n_internal_units = n_internal_units
-        self._input_scaling = input_scaling
-        self._connectivity = connectivity
-        self._activation_function = activation_function
-        self._activation_derivative = activation_derivative
+        for key, value in model.__dict__.items():
+            setattr(self, key, value)
 
-        # Input weights depend on input size: they are set when data is provided
-        self._internal_weights = None
-        self._internal_bias = None
-
-        # Set seed
-        np.random.seed(seed)
-
-    def _initialize_internal_weights(self, n_internal_units, n_data_dimension, connectivity):
-        # Generate sparse, uniformly distributed weights.
-        internal_weights = sparse.rand(n_internal_units,
-                                       n_data_dimension,
-                                       density=connectivity).toarray()
-
-        # Ensure that the nonzero values are uniformly distributed in [-0.5, 0.5]
-        internal_weights[np.where(internal_weights > 0)] -= 0.5
-
-        return internal_weights
-
-    def _initialize_internal_bias(self, n_internal_units):
-        internal_bias = np.random.rand(n_internal_units, 1)
-        # Ensure that the values are uniformly distributed in [-0.5, 0.5]
-        internal_bias -= 0.5
-        return internal_bias
-
-    def _compute_state_matrix(self, X):
-        # Calculate state
-        state_before_activation = np.tensordot(self._internal_weights, X, axes=(1, 1)) \
-                                  + np.tile(self._internal_bias, (1, X.shape[0]))
-
-        # Apply nonlinearity
-        state_vec = self._activation_function(state_before_activation)
-
-        return state_vec
-
-    def get_reservoir_out(self, input_array):
-        N, d = input_array.shape
-        if self._internal_weights is None:
-            # Generate internal weights
-            self._internal_weights = self._initialize_internal_weights(self._n_internal_units, d,
-                                                                       self._connectivity)
-            self._internal_bias = self._initialize_internal_bias(self._n_internal_units)
-
-        # compute reservoir states
-        states = self._compute_state_matrix(input_array)
-
-        # compute reservoir grad
-        gradient = self._activation_derivative(states)[:, None, :] * np.tile(self._internal_weights[:, :, None],
-                                                                             (1, 1, N))
-
-        return states.T, gradient.transpose(2, 0, 1)
-
-
-class Trainer(Parameters):
-
-    def __init__(self, model_class):
-        super().__init__()
-        self.model = model_class
         self.a = - self.r
         self.b = 0
         self.c = 0
-        self._einsum_optimize = 'greedy'  # optimal # greedy # False TODO: could save the ein_sum_path after 1st iter
+        self._einsum_optimize = 'greedy'  # optimal # greedy # False
+        # TODO: could save the ein_sum_path after 1st iter to optimise performance
 
     @staticmethod
     def f_tilde(*args):
@@ -194,25 +119,26 @@ class Trainer(Parameters):
         return np.sqrt(V)[:, :, None]
 
     def Y(self, y):
-        return y + self.f_tilde()*self.model.delta
+        return y + self.f_tilde() * self.delta
 
     def X1(self, res_out, i):
         # \Delta W^1_{t_i}) - \phi(X_{t_i})(b*\Delta t_i
-        return np.einsum('ij,ik->ij', res_out, (self.model.dW1[:, i, :]-self.b*self.model.delta),
+        return np.einsum('ij,ik->ij', res_out, (self.dW1[:, i, :] - self.b * self.delta),
                          optimize=self._einsum_optimize)
 
     def X2(self, res_out, res_grad, i):
         # (1-a\Delta t_i)\phi(X_{t_i}) + \Delta W^1_{t_i}) +
         # (\nabla_\phi(X_{t_i}))\sigma(V_{t_i})(\Delta B_{t_i}-(b\rho + c\sqrt{1-\rho^2})\Delta t_i))
-        scaled_res_out = (1-self.a*self.model.delta)*res_out
-        scaled_dB = (self.model.dB[:, i, :]-(self.b*self.rho + self.c*np.sqrt(1-self.rho**2))*self.model.delta)
-        SigmaBM_prod = np.einsum('ijk,ik->ij', self.Sigma_func(self.model.V[:, i, :]), scaled_dB,
+        scaled_res_out = (1 - self.a * self.delta) * res_out
+        scaled_dB = (self.dB[:, i, :] - (
+                    self.b * self.rho + self.c * np.sqrt(1 - self.rho ** 2)) * self.delta)
+        SigmaBM_prod = np.einsum('ijk,ik->ij', self.Sigma_func(self.V[:, i, :]), scaled_dB,
                                  optimize=self._einsum_optimize)
         return scaled_res_out + np.einsum('ijk,ik->ij', res_grad, SigmaBM_prod, optimize=self._einsum_optimize)
 
     def get_LS_problem(self, res_tuple, target, i):
-        res_out_xi, _ = res_tuple[0].get_reservoir_out(self.model.S[:, i, :])
-        res_out_theta, res_grad_theta = res_tuple[1].get_reservoir_out(self.model.S[:, i, :])
+        res_out_xi, _ = res_tuple[0].get_reservoir_out(self.S[:, i, :])
+        res_out_theta, res_grad_theta = res_tuple[1].get_reservoir_out(self.S[:, i, :])
         X1_vec = self.X1(res_out=res_out_xi, i=i)
         X2_vec = self.X2(res_out=res_out_theta, res_grad=res_grad_theta, i=i)
 
@@ -232,7 +158,7 @@ class Trainer(Parameters):
 
     def get_solution(self, res_theta, beta, i):
         # evaluate the solution at time t_i
-        res_out, _ = res_theta.get_reservoir_out(self.model.S[:, i, :])
+        res_out, _ = res_theta.get_reservoir_out(self.S[:, i, :])
 
         # take only \theta from \beta = [\xi, \theta]
         target = np.tensordot(beta[:, res_theta._n_internal_units:], res_out, axes=(1, 1)).T
@@ -259,53 +185,54 @@ class Trainer(Parameters):
             beta = reg.fit(A, B).coef_
         return beta
 
-    def payoff_function(self, x):
-        if self.opt_type == 'c':
-            return np.maximum(x - self.K, 0)
-        elif self.opt_type == 'p':
-            return np.maximum(self.K - x, 0)
-        else:
-            raise ValueError('Wrong option type')
-
     @timing
-    def fit(self, alpha=None):
-        Y_array = np.zeros((self.model.N_samples, self.model.n_timesteps+1, self.model.d_assets))
-        Y_array[:, -1, :] = self.payoff_function(self.model.S[:, -1, :])
+    def fit(self, alpha=None, verbose=0, seed=0):
+        Y_array = np.zeros((self.N_samples, self.n_timesteps + 1, self.d_assets))
+        Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K,
+                                            opt_type=self.opt_type)
 
-        for k in range(self.model.n_timesteps+1 - 2, -1, -1):
-            print(f'Regressing time step: {k + 1}')
+        for k in range(self.n_timesteps + 1 - 2, -1, -1):
+            if verbose > 0: print(f'Regressing time step: {k + 1}')
 
             # res_tuple = (\Phi^xi, \Phi^\theta)
-            res_tuple = (Reservoir(n_internal_units=100, connectivity=0.5, input_scaling=0.25, seed=k),
-                         Reservoir(n_internal_units=100, connectivity=0.5, input_scaling=0.25, seed=k+self.model.n_timesteps))
+            res_tuple = (Reservoir(n_internal_units=self.n_hidden_nodes,
+                                   connectivity=self.connectivity,
+                                   input_scaling=self.input_scaling,
+                                   weight_compact_radius=self.weight_compact_radius,
+                                   seed=seed+k),
+                         Reservoir(n_internal_units=self.n_hidden_nodes,
+                                   connectivity=self.connectivity,
+                                   input_scaling=self.input_scaling,
+                                   weight_compact_radius=self.weight_compact_radius,
+                                   seed=seed + k + self.n_timesteps))
 
-            # same realisations of random bases
+            # same realisations of random bases for both RWNNs
             # res_tuple = (Reservoir(n_internal_units=100, connectivity=0.5, input_scaling=0.5, seed=k),)*2
 
             beta = self.fit_step_exact(res_tuple, Y_array[:, k + 1, :], k, alpha=alpha)
 
-            # Y_array[:, k, :] = self.get_solution(res_theta=res_tuple[1], beta=beta, i=k)
+            Y_array[:, k, :] = self.get_solution(res_theta=res_tuple[1], beta=beta, i=k)
             # keep the price positive
-            Y_array[:, k, :] = np.maximum(self.get_solution(res_tuple[1], beta, k), 0)
+            # Y_array[:, k, :] = np.maximum(self.get_solution(res_tuple[1], beta, k), 0)
             # Y_array[:, k, :] = np.abs(self.get_solution(res_tuple[1], beta, k))
 
         return Y_array
 
 
 if __name__ == '__main__':
+    params = Parameters(S0=1, T=1, H=0.3, r=0.05, rho=-0.7, xi=0.235 ** 2, eta=1.9, K=1, opt_type='c',
+                        n_hidden_nodes=100, connectivity=0.5, input_scaling=0.1, weight_compact_radius=5.)
     with temp_seed(1000):
-        rB = roughBergomi(n_timesteps=21, N_samples=50000)
-    # path = rB.simulate_paths(n_timesteps=21, N_samples=5000)
+        rB = roughBergomi(parameters=params, n_timesteps=21, N_samples=50000)
 
     trainer = Trainer(rB)
     option_price_process = trainer.fit(alpha=1.)
-    # res = Reservoir(n_internal_units=500, connectivity=0.25, input_scaling=0.1)
-    # res.get_reservoir_out(path[:, -1, :])
 
     plt.plot(rB.time_grid.T,
-             option_price_process[np.random.choice(option_price_process.shape[0], 1000, replace=False), :, 0].T)
+             option_price_process[np.random.choice(option_price_process.shape[0], 100, replace=False), :, 0].T)
     plt.xlabel('t')
     plt.ylabel(r'$C_t$')
+    # plt.savefig('./Graphics/rBergomi_option_price.pdf', format='pdf')
     plt.show()
 
     with temp_seed(1000):
