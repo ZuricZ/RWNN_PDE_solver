@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from rbergomi import rBergomi
-from utils import temp_seed, timing, payoff_function
+from utils import temp_seed, timing, vanilla_payoff_function, basket_payoff_function
 
 from reservoir import Reservoir, ReLu, grad_ReLu
 
@@ -188,7 +188,7 @@ class Trainer:
     @timing
     def fit(self, alpha=None, verbose=0, seed=0):
         Y_array = np.zeros((self.N_samples, self.n_timesteps + 1, self.d_assets))
-        Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K,
+        Y_array[:, -1, :] = vanilla_payoff_function(self.S[:, -1, :], self.K,
                                             opt_type=self.opt_type)
 
         for k in range(self.n_timesteps + 1 - 2, -1, -1):
@@ -239,7 +239,7 @@ if __name__ == '__main__':
         theo_price = rB.call_price() if rB.opt_type == 'c' else rB.put_price()
 
     print(f'Theo. price: {theo_price}')
-    print(f'MC price: {np.maximum(rB.S[:, -1, :] - rB.K, 0).mean(0)}')
+    print(f'MC price: {vanilla_payoff_function(S=rB.S[:, -1, :], K=rB.K).mean(0)}')
     print(f'PDE price: {option_price_process[:, 0, :].mean(0)}')
     print(f'MSE: {((theo_price - option_price_process[:, 0, :].mean(0)) ** 2).mean()}')
 

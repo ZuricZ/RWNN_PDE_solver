@@ -16,7 +16,7 @@ from sklearn.metrics import accuracy_score, f1_score
 from dataclasses import dataclass
 from typing import Literal
 
-from utils import temp_seed, timing, payoff_function
+from utils import temp_seed, timing, vanilla_payoff_function
 from reservoir import Reservoir, ReLu, grad_ReLu
 
 
@@ -167,7 +167,7 @@ class Trainer:
     @timing
     def fit(self, alpha=1., verbose=0, seed=0):
         Y_array = np.zeros((self.N_samples, self.n_timesteps, self.d_assets))
-        Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K, opt_type=self.opt_type)
+        Y_array[:, -1, :] = vanilla_payoff_function(self.S[:, -1, :], self.K, opt_type=self.opt_type)
 
         for k in range(self.n_timesteps - 2, -1, -1):
             if verbose > 0: print(f'Regressing time step: {k + 1}')
@@ -214,7 +214,7 @@ if __name__ == '__main__':
     plt.show()
 
     print(f'Theo. price: {BS.call_price(S=BS.S0, T=1)}')
-    print(f'MC price: {np.maximum(BS.S[:, -1, :] - BS.K, 0).mean(0)}')
+    print(f'MC price: {vanilla_payoff_function(S=BS.S[:, -1, :], K=BS.K).mean(0)}')
     print(f'PDE price: {option_price_process[:, 0, :].mean(0)}')
     print(f'MSE: {((BS.call_price(S=BS.S0, T=1) - option_price_process[:, 0, :].mean(0)) ** 2).mean()}')
 
