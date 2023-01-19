@@ -7,7 +7,7 @@ from mpl_toolkits.mplot3d import Axes3D
 # %matplotlib notebook
 
 import numpy as np
-from scipy.stats import norm
+from scipy.stats import norm, random_correlation
 import scipy.io
 from scipy.linalg import solve as LS_solve
 from scipy import sparse
@@ -16,19 +16,18 @@ from sklearn.metrics import accuracy_score, f1_score
 from dataclasses import dataclass
 from typing import Literal
 
-from utils import temp_seed, timing, vanilla_payoff_function
+from utils import temp_seed, timing, vanilla_payoff_function, basket_payoff_function, payoff_function
 from reservoir import Reservoir, ReLu, grad_ReLu
 
 
 @dataclass
 class Parameters:
-    d: int
     T: float
     r: float
     S0: np.ndarray
     K: np.ndarray
-    sigma: np.ndarray
     Cov: np.ndarray
+    opt_style: Literal['vanilla', 'basket']
     opt_type: Literal['c', 'p']
 
     n_hidden_nodes: int = 100
@@ -46,6 +45,7 @@ class BlackScholes:
 
         self.N_samples = N_samples
         self.n_timesteps = n_timesteps
+        self.sigma = np.sqrt(np.diagonal(self.Cov))
 
         # initialised when simulate_paths() is called
         self.time_grid = None
@@ -53,7 +53,6 @@ class BlackScholes:
         self.diffusion = None
         self.S = None
         self.dW = None
-        self.d_assets = None
 
         self.simulate_paths(N_samples=N_samples, n_timesteps=n_timesteps)
 
@@ -72,13 +71,16 @@ class BlackScholes:
     def put_price(self, S, T):
         return self.K * np.exp(-self.r * T) - S + self.call_price(S, T)
 
+    def basket_call_price(self, N_samples, n_timesteps):
+        S = self.simulate_paths(N_samples, n_timesteps)
+        return basket_payoff_function(S=S[:, -1, :], K=self.K).mean()
+
     @timing
     def simulate_paths(self, N_samples, n_timesteps):
         """
         :param N_samples:   number of samples
         :param n_timesteps: number of increments
         """
-        # initialise for further use
         d_assets = self.S0.shape[0]
 
         time_grid = np.linspace(0., self.T, n_timesteps)
@@ -97,7 +99,6 @@ class BlackScholes:
 
         # initialise for further use
         if self.S is None:
-            self.d_assets = d_assets
             self.time_grid = time_grid
             self.delta = dt
             self.diffusion = diffusion
@@ -166,8 +167,8 @@ class Trainer:
 
     @timing
     def fit(self, alpha=1., verbose=0, seed=0):
-        Y_array = np.zeros((self.N_samples, self.n_timesteps, self.d_assets))
-        Y_array[:, -1, :] = vanilla_payoff_function(self.S[:, -1, :], self.K, opt_type=self.opt_type)
+        Y_array = np.zeros((self.N_samples, self.n_timesteps, self.K.shape[0]))
+        Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K, opt_style=self.opt_style, opt_type=self.opt_type)
 
         for k in range(self.n_timesteps - 2, -1, -1):
             if verbose > 0: print(f'Regressing time step: {k + 1}')
@@ -178,33 +179,43 @@ class Trainer:
                             seed=seed+k)
             beta = self.fit_step_exact(res, Y_array[:, k + 1, :], k, alpha=alpha)
 
-            Y_array[:, k, :] = self.get_solution(res, beta, k)
+            # Y_array[:, k, :] = self.get_solution(res, beta, k)
 
             # keep the price positive
             # Y_array[:, k, :] = np.maximum(self.get_solution(res, beta, k), 0)
-            # Y_array[:, k, :] = np.abs(self.get_solution(res, beta, k))
+            Y_array[:, k, :] = np.abs(self.get_solution(res, beta, k))
 
         return Y_array
 
 
 if __name__ == '__main__':
-    d = 5; sigma = np.linspace(0.05, 0.4, d)
-    params = Parameters(d=d, S0=np.array([1.] * d),  # np.random.uniform(0.5, 2, 5)
+    d = 5  # process dimension
+    m = 1  # option price dimension
+    # generate Corr matrix with some structure
+    sigma = np.linspace(0.05, 0.25, d)
+    Corr = random_correlation.rvs(eigs=d*np.logspace(1, -1, d) / np.logspace(1, -1, d).sum(), random_state=0)
+    # Corr = np.diag(np.ones_like(sigma))
+    print(sigma, Corr, sep='\n')
+    Cov = np.diag(sigma) @ Corr @ np.diag(sigma)
+
+    params = Parameters(S0=np.array([1.] * d),  # np.random.uniform(0.5, 2, 5)
                         T=1.,
                         r=0.05,
-                        K=np.array([1.] * d),
-                        sigma=sigma,
-                        Cov=np.diag(sigma ** 2),
+                        K=np.array([1.] * m),
+                        Cov=Cov,
+                        opt_style='basket',
                         opt_type='c',
                         n_hidden_nodes=1000,
                         connectivity=0.5,
-                        input_scaling=0.1
+                        input_scaling=0.1,
+                        weight_compact_radius=.5
                         )
 
     BS = BlackScholes(params, n_timesteps=21, N_samples=50000)
 
     trainer = Trainer(BS)
-    option_price_process = trainer.fit()
+    option_price_process = trainer.fit(alpha=params.weight_compact_radius,
+                                       seed=10)
 
     plt.plot(BS.time_grid,
              option_price_process[np.random.choice(option_price_process.shape[0], 200, replace=False), :, 0].T)
@@ -213,10 +224,10 @@ if __name__ == '__main__':
     # plt.savefig('./Graphics/BS_option_price.pdf', format='pdf')
     plt.show()
 
-    print(f'Theo. price: {BS.call_price(S=BS.S0, T=1)}')
-    print(f'MC price: {vanilla_payoff_function(S=BS.S[:, -1, :], K=BS.K).mean(0)}')
+    theo_price = BS.basket_call_price(N_samples=2*10**5, n_timesteps=100)
+    print(f'"Theo." price: {theo_price}')
+    print(f'MC price: {basket_payoff_function(S=BS.S[:, -1, :], K=BS.K).mean(0)}')
     print(f'PDE price: {option_price_process[:, 0, :].mean(0)}')
-    print(f'MSE: {((BS.call_price(S=BS.S0, T=1) - option_price_process[:, 0, :].mean(0)) ** 2).mean()}')
+    print(f'MSE: {((theo_price - option_price_process[:, 0, :].mean(0)) ** 2).mean()}')
 
-    print('end.')
     print('end.')

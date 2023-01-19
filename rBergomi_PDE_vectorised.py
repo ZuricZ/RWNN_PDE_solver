@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from rbergomi import rBergomi
-from utils import temp_seed, timing, vanilla_payoff_function, basket_payoff_function
+from utils import temp_seed, timing, vanilla_payoff_function
 
 from reservoir import Reservoir, ReLu, grad_ReLu
 

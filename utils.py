@@ -39,5 +39,14 @@ def basket_payoff_function(S, K, weight=None, opt_type='c'):
     if weight is None:
         weight = np.ones(S.shape[1]) / S.shape[1]
     opt_type_ind = 1 if opt_type == 'c' else -1
-    return np.maximum(opt_type_ind*(np.average(S, weights=weight, axis=1) - K), 0)
+    return np.maximum(opt_type_ind*(np.average(S, weights=weight, axis=1, keepdims=True) - K), 0)
+
+
+def payoff_function(S, K, opt_style, opt_type, **kwargs):
+    if opt_style == 'vanilla':
+        return vanilla_payoff_function(S, K, opt_type=opt_type)
+    elif opt_style == 'basket':
+        return basket_payoff_function(S, K, weight=kwargs.get('weight'), opt_type=opt_type)
+    else:
+        raise ValueError('Wrong option style.')
 
