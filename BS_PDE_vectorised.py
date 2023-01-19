@@ -16,18 +16,18 @@ from sklearn.metrics import accuracy_score, f1_score
 from dataclasses import dataclass
 from typing import Literal
 
-from utils import temp_seed, timing, vanilla_payoff_function, basket_payoff_function
+from utils import temp_seed, timing, vanilla_payoff_function, basket_payoff_function, payoff_function
 from reservoir import Reservoir, ReLu, grad_ReLu
 
 
 @dataclass
 class Parameters:
-    d: int
     T: float
     r: float
     S0: np.ndarray
     K: np.ndarray
     Cov: np.ndarray
+    opt_style: Literal['vanilla', 'basket']
     opt_type: Literal['c', 'p']
 
     n_hidden_nodes: int = 100
@@ -53,7 +53,6 @@ class BlackScholes:
         self.diffusion = None
         self.S = None
         self.dW = None
-        self.d_assets = None
 
         self.simulate_paths(N_samples=N_samples, n_timesteps=n_timesteps)
 
@@ -82,7 +81,6 @@ class BlackScholes:
         :param N_samples:   number of samples
         :param n_timesteps: number of increments
         """
-        # initialise for further use
         d_assets = self.S0.shape[0]
 
         time_grid = np.linspace(0., self.T, n_timesteps)
@@ -101,7 +99,6 @@ class BlackScholes:
 
         # initialise for further use
         if self.S is None:
-            self.d_assets = d_assets
             self.time_grid = time_grid
             self.delta = dt
             self.diffusion = diffusion
@@ -170,8 +167,8 @@ class Trainer:
 
     @timing
     def fit(self, alpha=1., verbose=0, seed=0):
-        Y_array = np.zeros((self.N_samples, self.n_timesteps, 1))
-        Y_array[:, -1, :] = basket_payoff_function(self.S[:, -1, :], self.K, opt_type=self.opt_type)
+        Y_array = np.zeros((self.N_samples, self.n_timesteps, self.K.shape[0]))
+        Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K, opt_style=self.opt_style, opt_type=self.opt_type)
 
         for k in range(self.n_timesteps - 2, -1, -1):
             if verbose > 0: print(f'Regressing time step: {k + 1}')
@@ -192,7 +189,8 @@ class Trainer:
 
 
 if __name__ == '__main__':
-    d = 5
+    d = 5  # process dimension
+    m = 1  # option price dimension
     # generate Corr matrix with some structure
     sigma = np.linspace(0.05, 0.25, d)
     Corr = random_correlation.rvs(eigs=d*np.logspace(1, -1, d) / np.logspace(1, -1, d).sum(), random_state=0)
@@ -200,11 +198,12 @@ if __name__ == '__main__':
     print(sigma, Corr, sep='\n')
     Cov = np.diag(sigma) @ Corr @ np.diag(sigma)
 
-    params = Parameters(d=d, S0=np.array([1.] * d),  # np.random.uniform(0.5, 2, 5)
+    params = Parameters(S0=np.array([1.] * d),  # np.random.uniform(0.5, 2, 5)
                         T=1.,
                         r=0.05,
-                        K=np.array([1.] * 1),
+                        K=np.array([1.] * m),
                         Cov=Cov,
+                        opt_style='basket',
                         opt_type='c',
                         n_hidden_nodes=1000,
                         connectivity=0.5,
