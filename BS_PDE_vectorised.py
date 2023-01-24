@@ -27,8 +27,8 @@ class Parameters:
     S0: np.ndarray
     K: np.ndarray
     Cov: np.ndarray
-    opt_style: Literal['vanilla', 'basket']
-    opt_type: Literal['c', 'p']
+    opt_style: Literal['vanilla', 'basket'] = 'vanilla'
+    opt_type: Literal['c', 'p'] = 'c'
 
     n_hidden_nodes: int = 100
     connectivity: float = 0.5

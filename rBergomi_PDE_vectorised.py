@@ -17,14 +17,14 @@ plt.style.use('ggplot')
 
 @dataclass
 class Parameters:
-    S0: int
-    T: int
+    S0: float
+    T: float
     H: float
     r: float
     rho: float
     xi: float
     eta: float
-    K: int
+    K: float
     opt_type: Literal['c', 'p']
 
     n_hidden_nodes: int = 100
@@ -50,7 +50,6 @@ class roughBergomi:
         self.dW1 = None
         self.dW2 = None
         self.dB = None
-        self.d_assets = 1
         self.simulate_paths(N_samples=N_samples, n_timesteps=n_timesteps)
 
     def call_price(self, N_samples=10**5, n_timesteps=100):
@@ -175,19 +174,19 @@ class Trainer:
         A, B = self.get_LS_problem(res_tuple, target, i)
         if alpha is None:
             reg = LinearRegression(fit_intercept=False,
-                                   # positive=True
+                                   positive=True
                                    )
             beta = reg.fit(A, B).coef_
         else:
             reg = Ridge(alpha=alpha, fit_intercept=False,
-                        # positive=True
+                        positive=True
                         )
             beta = reg.fit(A, B).coef_
         return beta
 
     @timing
     def fit(self, alpha=None, verbose=0, seed=0):
-        Y_array = np.zeros((self.N_samples, self.n_timesteps + 1, self.d_assets))
+        Y_array = np.zeros((self.N_samples, self.n_timesteps + 1, 1))
         Y_array[:, -1, :] = vanilla_payoff_function(self.S[:, -1, :], self.K,
                                             opt_type=self.opt_type)
 
@@ -211,22 +210,22 @@ class Trainer:
 
             beta = self.fit_step_exact(res_tuple, Y_array[:, k + 1, :], k, alpha=alpha)
 
-            Y_array[:, k, :] = self.get_solution(res_theta=res_tuple[1], beta=beta, i=k)
+            # Y_array[:, k, :] = self.get_solution(res_theta=res_tuple[1], beta=beta, i=k)
             # keep the price positive
             # Y_array[:, k, :] = np.maximum(self.get_solution(res_tuple[1], beta, k), 0)
-            # Y_array[:, k, :] = np.abs(self.get_solution(res_tuple[1], beta, k))
+            Y_array[:, k, :] = np.abs(self.get_solution(res_tuple[1], beta, k))
 
         return Y_array
 
 
 if __name__ == '__main__':
-    params = Parameters(S0=1, T=1, H=0.3, r=0.05, rho=-0.7, xi=0.235 ** 2, eta=1.9, K=1, opt_type='c',
-                        n_hidden_nodes=100, connectivity=0.5, input_scaling=0.1, weight_compact_radius=5.)
-    with temp_seed(1000):
-        rB = roughBergomi(parameters=params, n_timesteps=21, N_samples=50000)
+    params = Parameters(S0=1., T=1., H=0.3, r=0.01, rho=-0.7, xi=0.235 ** 2, eta=1.9, K=1., opt_type='c',
+                        n_hidden_nodes=1000, connectivity=0.5, input_scaling=0.25, weight_compact_radius=0.5)
+
+    rB = roughBergomi(parameters=params, n_timesteps=21, N_samples=50000)
 
     trainer = Trainer(rB)
-    option_price_process = trainer.fit(alpha=1.)
+    option_price_process = trainer.fit(alpha=0.1)  # params.weight_compact_radius
 
     plt.plot(rB.time_grid.T,
              option_price_process[np.random.choice(option_price_process.shape[0], 100, replace=False), :, 0].T)
@@ -235,12 +234,11 @@ if __name__ == '__main__':
     # plt.savefig('./Graphics/rBergomi_option_price.pdf', format='pdf')
     plt.show()
 
-    with temp_seed(1000):
-        theo_price = rB.call_price() if rB.opt_type == 'c' else rB.put_price()
+    theo_price = rB.call_price(N_samples=5*10**5) if rB.opt_type == 'c' else rB.put_price(N_samples=5*10**5)
 
     print(f'Theo. price: {theo_price}')
     print(f'MC price: {vanilla_payoff_function(S=rB.S[:, -1, :], K=rB.K).mean(0)}')
-    print(f'PDE price: {option_price_process[:, 0, :].mean(0)}')
+    print(f'PDE price: {option_price_process[:, 0, :].mean(0)}')  # 0.08005402 for 10k nodes
     print(f'MSE: {((theo_price - option_price_process[:, 0, :].mean(0)) ** 2).mean()}')
 
     print('end.')
