@@ -1,7 +1,8 @@
 import matplotlib.pyplot as plt
 
 # plt.style.use('dark_background')
-plt.style.use('ggplot')
+# plt.style.use('ggplot')
+plt.style.use('seaborn-v0_8-paper')
 from mpl_toolkits.mplot3d import Axes3D
 
 # %matplotlib notebook
@@ -70,6 +71,12 @@ class BlackScholes:
 
     def put_price(self, S, T):
         return self.K * np.exp(-self.r * T) - S + self.call_price(S, T)
+
+    def get_delta_call(self, S, T):
+        return norm.cdf(self._d1(S, T))
+
+    def get_delta_put(self, S, T):
+        return self.get_delta_call(S, T) - 1
 
     def basket_call_price(self, N_samples, n_timesteps):
         S = self.simulate_paths(N_samples, n_timesteps)
@@ -148,6 +155,12 @@ class Trainer:
         target = np.tensordot(beta, res_out, axes=(1, 1)).T
         return target
 
+    def get_solution_grad(self, res, beta, i):
+        _, res_grad = res.get_reservoir_out(self.S[:, i, :])
+        target_grad = np.transpose(np.tensordot(beta, res_grad, axes=(1, 1)), (1, 0, 2))
+        return np.matmul(target_grad, self.Sigma_func(self.S[:, i, :]))
+
+
     def fit_step_exact(self, res, target, i, alpha=None):
         A, B = self.get_LS_problem(res, target, i)
         if alpha is not None:
@@ -168,6 +181,7 @@ class Trainer:
     @timing
     def fit(self, alpha=1., verbose=0, seed=0):
         Y_array = np.zeros((self.N_samples, self.n_timesteps, self.K.shape[0]))
+        Z_array = np.zeros((self.N_samples, self.n_timesteps, self.S0.shape[0], self.K.shape[0]))
         Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K, opt_style=self.opt_style, opt_type=self.opt_type)
 
         for k in range(self.n_timesteps - 2, -1, -1):
@@ -179,13 +193,15 @@ class Trainer:
                             seed=seed+k)
             beta = self.fit_step_exact(res, Y_array[:, k + 1, :], k, alpha=alpha)
 
-            # Y_array[:, k, :] = self.get_solution(res, beta, k)
+            Y_array[:, k, :] = self.get_solution(res, beta, k)
+
+            Z_array[:, k, :, :] = self.get_solution_grad(res, beta, k)
 
             # keep the price positive
             # Y_array[:, k, :] = np.maximum(self.get_solution(res, beta, k), 0)
-            Y_array[:, k, :] = np.abs(self.get_solution(res, beta, k))
+            # Y_array[:, k, :] = np.abs(self.get_solution(res, beta, k))
 
-        return Y_array
+        return Y_array, Z_array
 
 
 if __name__ == '__main__':
@@ -200,14 +216,14 @@ if __name__ == '__main__':
 
     params = Parameters(S0=np.array([1.] * d),  # np.random.uniform(0.5, 2, 5)
                         T=1.,
-                        r=0.05,
+                        r=0.01,
                         K=np.array([1.] * m),
                         Cov=Cov,
                         opt_style='basket',
                         opt_type='c',
-                        n_hidden_nodes=1000,
+                        n_hidden_nodes=100,
                         connectivity=0.5,
-                        input_scaling=0.1,
+                        input_scaling=0.25,
                         weight_compact_radius=.5
                         )
 
@@ -215,18 +231,20 @@ if __name__ == '__main__':
 
     trainer = Trainer(BS)
     option_price_process = trainer.fit(alpha=params.weight_compact_radius,
-                                       seed=10)
+                                       seed=0)
 
     plt.plot(BS.time_grid,
              option_price_process[np.random.choice(option_price_process.shape[0], 200, replace=False), :, 0].T)
     plt.xlabel('t')
     plt.ylabel(r'$C_t$')
     # plt.savefig('./Graphics/BS_option_price.pdf', format='pdf')
-    plt.show()
+    # plt.show()
 
-    theo_price = BS.basket_call_price(N_samples=2*10**5, n_timesteps=100)
+    # theo_price = BS.call_price(params.S0, params.T)
+    theo_price = BS.basket_call_price(N_samples=4*10**5, n_timesteps=100)
     print(f'"Theo." price: {theo_price}')
-    print(f'MC price: {basket_payoff_function(S=BS.S[:, -1, :], K=BS.K).mean(0)}')
+    print(f'MC price: '
+          f'{payoff_function(S=BS.S[:, -1, :], K=BS.K, opt_style=params.opt_style, opt_type=params.opt_type).mean(0)}')
     print(f'PDE price: {option_price_process[:, 0, :].mean(0)}')
     print(f'MSE: {((theo_price - option_price_process[:, 0, :].mean(0)) ** 2).mean()}')
 
