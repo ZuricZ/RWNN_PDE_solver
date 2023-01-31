@@ -12,7 +12,8 @@ from reservoir import Reservoir, ReLu, grad_ReLu
 import matplotlib.pyplot as plt
 
 # plt.style.use('dark_background')
-plt.style.use('ggplot')
+# plt.style.use('ggplot')
+plt.style.use('seaborn-v0_8-paper')
 
 
 @dataclass
@@ -212,29 +213,29 @@ class Trainer:
 
             # Y_array[:, k, :] = self.get_solution(res_theta=res_tuple[1], beta=beta, i=k)
             # keep the price positive
-            # Y_array[:, k, :] = np.maximum(self.get_solution(res_tuple[1], beta, k), 0)
-            Y_array[:, k, :] = np.abs(self.get_solution(res_tuple[1], beta, k))
+            Y_array[:, k, :] = np.maximum(self.get_solution(res_tuple[1], beta, k), 0)
+            # Y_array[:, k, :] = np.abs(self.get_solution(res_tuple[1], beta, k))
 
         return Y_array
 
 
 if __name__ == '__main__':
     params = Parameters(S0=1., T=1., H=0.3, r=0.01, rho=-0.7, xi=0.235 ** 2, eta=1.9, K=1., opt_type='c',
-                        n_hidden_nodes=1000, connectivity=0.5, input_scaling=0.25, weight_compact_radius=0.5)
+                        n_hidden_nodes=100, connectivity=1., input_scaling=0.25, weight_compact_radius=0.5)
 
     rB = roughBergomi(parameters=params, n_timesteps=21, N_samples=50000)
 
     trainer = Trainer(rB)
-    option_price_process = trainer.fit(alpha=0.1)  # params.weight_compact_radius
+    option_price_process = trainer.fit(alpha=0.1, seed=0)  # params.weight_compact_radius
 
     plt.plot(rB.time_grid.T,
              option_price_process[np.random.choice(option_price_process.shape[0], 100, replace=False), :, 0].T)
     plt.xlabel('t')
     plt.ylabel(r'$C_t$')
     # plt.savefig('./Graphics/rBergomi_option_price.pdf', format='pdf')
-    plt.show()
+    # plt.show()
 
-    theo_price = rB.call_price(N_samples=5*10**5) if rB.opt_type == 'c' else rB.put_price(N_samples=5*10**5)
+    theo_price = rB.call_price(N_samples=8*10**5) if rB.opt_type == 'c' else rB.put_price(N_samples=8*10**5)
 
     print(f'Theo. price: {theo_price}')
     print(f'MC price: {vanilla_payoff_function(S=rB.S[:, -1, :], K=rB.K).mean(0)}')
