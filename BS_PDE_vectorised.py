@@ -147,7 +147,7 @@ class Trainer:
         A = np.einsum('ki,kj->ij', single_regr, single_regr, optimize=self._einsum_optimize)
 
         B = np.einsum('ki,kj->ij', single_regr, target, optimize=self._einsum_optimize)
-        return A, B
+        return A / A.shape[0], B / B.shape[0]  # compute means to normalize the matrices
 
     def get_solution(self, res, beta, i):
         # evaluates the solution of the regression
@@ -168,18 +168,18 @@ class Trainer:
         beta = LS_solve(A, B)
         return beta.T
 
-    def fit_step_ls(self, res_tuple, target, i, alpha=None):
+    def fit_step_ls(self, res_tuple, target, i, alpha=None, positive=False):
         A, B = self.get_LS_problem(res_tuple, target, i)
         if alpha is None:
-            reg = LinearRegression(fit_intercept=False, positive=True)
-            beta = reg.fit(A, B)
+            reg = LinearRegression(fit_intercept=False, positive=positive)
         else:
-            reg = Ridge(alpha=alpha, fit_intercept=False, positive=True)
-            beta = reg.fit(A, B)
-        return beta.T
+            reg = Ridge(alpha=alpha, fit_intercept=False, positive=positive)
+        reg.fit(A, B)
+        beta = reg.coef_
+        return beta
 
     @timing
-    def fit(self, alpha=1., verbose=0, seed=0):
+    def fit(self, alpha=1., verbose=0, seed=0, method='exact'):
         Y_array = np.zeros((self.N_samples, self.n_timesteps, self.K.shape[0]))
         Z_array = np.zeros((self.N_samples, self.n_timesteps, self.S0.shape[0], self.K.shape[0]))
         Y_array[:, -1, :] = payoff_function(self.S[:, -1, :], self.K, opt_style=self.opt_style, opt_type=self.opt_type)
@@ -191,14 +191,19 @@ class Trainer:
                             connectivity=self.connectivity,
                             input_scaling=self.input_scaling,
                             seed=seed+k)
-            beta = self.fit_step_exact(res, Y_array[:, k + 1, :], k, alpha=alpha)
+            if method.lower() == 'exact':
+                beta = self.fit_step_exact(res, Y_array[:, k + 1, :], k, alpha=alpha)
+            elif method.lower() == 'ls':
+                beta = self.fit_step_ls(res, Y_array[:, k + 1, :], k, alpha=alpha)
+            else:
+                raise NotImplementedError
 
             Y_array[:, k, :] = self.get_solution(res, beta, k)
 
             Z_array[:, k, :, :] = self.get_solution_grad(res, beta, k)
 
             # keep the price positive
-            # Y_array[:, k, :] = np.maximum(self.get_solution(res, beta, k), 0)
+            Y_array[:, k, :] = np.maximum(self.get_solution(res, beta, k), 0)
             # Y_array[:, k, :] = np.abs(self.get_solution(res, beta, k))
 
         return Y_array, Z_array

@@ -52,7 +52,8 @@ class Reservoir(object):
                                        random_state=self.random_state).toarray() * 2 * self.weight_compact_radius
 
         # Ensure that the nonzero values are uniformly distributed in [-weight_compact_radius, weight_compact_radius]
-        internal_weights[np.where(internal_weights > 0)] -= self.weight_compact_radius
+        # internal_weights[np.where(internal_weights > 0)] -= self.weight_compact_radius
+        internal_weights -= self.weight_compact_radius
 
         return internal_weights
 
@@ -76,8 +77,7 @@ class Reservoir(object):
         N, d = input_array.shape
         if self._internal_weights is None:
             # Generate internal weights
-            self._internal_weights = self._initialize_internal_weights(self._n_internal_units, d,
-                                                                       self._connectivity)
+            self._internal_weights = self._initialize_internal_weights(self._n_internal_units, d, self._connectivity)
             self._internal_bias = self._initialize_internal_bias(self._n_internal_units)
 
         # compute reservoir states
